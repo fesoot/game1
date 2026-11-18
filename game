@@ -1,0 +1,434 @@
+import tkinter as tk
+import random, math, os, time
+try: import winsound
+except ImportError: winsound = None
+
+W, H = 860, 640
+root = tk.Tk()
+root.title("AETHER DRIFT // Maps & Enemies")
+root.resizable(False, False)
+root.focus_force()
+
+c = tk.Canvas(root, width=W, height=H, bg="#080B14", highlightthickness=0)
+c.pack()
+
+MAPS = [
+    {"name": "CYBER GRID", "bg": "#070B14", "grid": "#10192E", "panel": "#0D1324", "border": "#00F0FF"},
+    {"name": "TOXIC LAB", "bg": "#06120B", "grid": "#0E2618", "panel": "#0A1C12", "border": "#00FF88"},
+    {"name": "CRIMSON CORE", "bg": "#140609", "grid": "#290D14", "panel": "#1F090F", "border": "#FF1744"},
+]
+
+SKINS = [
+    {"name": "AETHER", "cost": 0, "c1": "#00F0FF", "c2": "#0077FF", "eye": "#FFFFFF"},
+    {"name": "EMERALD", "cost": 60, "c1": "#00FF88", "c2": "#008844", "eye": "#FFFFFF"},
+    {"name": "PHANTOM", "cost": 180, "c1": "#D500F9", "c2": "#651FFF", "eye": "#00F0FF"},
+    {"name": "SOLARIS", "cost": 400, "c1": "#FFD600", "c2": "#FF6D00", "eye": "#080B14"},
+    {"name": "CRIMSON", "cost": 900, "c1": "#FF1744", "c2": "#880E4F", "eye": "#FFD600"},
+]
+
+PETS_DB = [
+    {"name": "NOOBINI", "rate": 2, "sell": 15, "col": "#00F0FF", "w": 45},
+    {"name": "SIGMA CAT", "rate": 5, "sell": 45, "col": "#00FF88", "w": 28},
+    {"name": "SKIBIDI BOT", "rate": 12, "sell": 120, "col": "#D500F9", "w": 16},
+    {"name": "TUNG SAHUR", "rate": 25, "sell": 300, "col": "#FFD600", "w": 8},
+    {"name": "BRAINROT GOD", "rate": 75, "sell": 1000, "col": "#FF1744", "w": 3},
+]
+
+FILTERS = ["OFF", "NOOBINI", "<= SIGMA CAT", "<= SKIBIDI BOT"]
+MODES = ["CLASSIC", "HARDCORE", "CHAOS"]
+mode_idx, map_idx, skin_idx, filter_idx = 0, 0, 0, 0
+state = "MENU"
+sfx_on, pet_often = True, False
+
+def sfx(freq, dur=25):
+    if sfx_on and winsound:
+        try: winsound.Beep(freq, dur)
+        except Exception: pass
+def load_data():
+    hs, mon, own, pts = 0, 0, {"AETHER"}, []
+    try:
+        if os.path.exists("aether.sav"):
+            d = open("aether.sav", encoding="utf-8").read().split("|")
+            hs, mon = int(d.pop(0)), int(d.pop(0))
+            if d:
+                s_raw = d.pop(0)
+                if s_raw: own = set(s_raw.split(","))
+            if d:
+                p_raw = d.pop(0)
+                if p_raw: pts = p_raw.split(",")
+    except Exception: pass
+    return hs, mon, own, pts
+
+def save_data():
+    try:
+        raw = f"{hs}|{money}|{','.join(owned_skins)}|{','.join(saved_pets)}"
+        open("aether.sav", "w", encoding="utf-8").write(raw)
+    except Exception: pass
+
+hs, money, owned_skins, saved_pets = load_data()
+exp_money, sc, exp_sc = money, 0, 0
+px, py, vx, vy, ps, base_spd = W // 2, H // 2, 0.0, 0.0, 34, 6.5
+cx, cy, cs, pulse = random.randint(60, W - 80), random.randint(100, H - 80), 20, 0.0
+dash_cd, dash_t, ldx, ldy = 0, 0, 1.0, 0.0
+shield_t, slow_t, pet_t, combo, combo_t, wave_r = 0, 0, 0, 1, 0, 0
+buff, wild_pet = None, None
+active_pets, enemies, particles, popups, keys, objs = [], [], [], [], set(), {}
+
+def get_map(): return MAPS[map_idx % len(MAPS)]
+def get_skin(): return SKINS[skin_idx % len(SKINS)]
+def get_pet(name):
+    for p in PETS_DB:
+        if p["name"] == name: return p
+    return PETS_DB
+
+def reset_canvas():
+    global c
+    c.destroy()
+    mp = get_map()
+    c = tk.Canvas(root, width=W, height=H, bg=mp["bg"], highlightthickness=0)
+    c.pack()
+    c.bind("<Button-1>", lambda e: root.focus_force())
+    enemies.clear(); particles.clear(); popups.clear(); active_pets.clear(); objs.clear()
+    for x in range(14, W - 14, 42): c.create_line(x, 72, x, H - 14, fill=mp["grid"])
+    for y in range(72, H - 14, 42): c.create_line(14, y, W - 14, y, fill=mp["grid"])
+    c.create_rectangle(14, 14, W - 14, H - 14, outline=mp["border"], width=2)
+
+def is_filtered(pname):
+    f = FILTERS[filter_idx]
+    if f == "NOOBINI" and pname == "NOOBINI": return True
+    if f == "<= SIGMA CAT" and pname in ("NOOBINI", "SIGMA CAT"): return True
+    if f == "<= SKIBIDI BOT" and pname in ("NOOBINI", "SIGMA CAT", "SKIBIDI BOT"): return True
+    return False
+
+def get_ban():
+    if os.path.exists("ban.dat"):
+        try:
+            t, r = open("ban.dat", encoding="utf-8").read().split("|", 1)
+            if time.time() < float(t): return True, int(float(t) - time.time()) + 1, r
+            os.remove("ban.dat")
+        except Exception:
+            try: os.remove("ban.dat")
+            except Exception: pass
+    return False, 0, ""
+
+def set_ban(r):
+    global hs, money, exp_money, saved_pets
+    sfx(200, 250); hs, money, exp_money, saved_pets = 0, 0, 0, []; save_data()
+    try: open("ban.dat", "w", encoding="utf-8").write(f"{time.time() + 60}|{r}")
+    except Exception: pass
+
+def add_popup(x, y, txt, col):
+    if len(popups) > 10: return
+    tid = c.create_text(x, y, text=txt, fill=col, font=("Segoe UI", 11, "bold"))
+    popups.append({"id": tid, "x": x, "y": y, "life": 25})
+
+def add_sparks(x, y, col, n=8):
+    if len(particles) > 28: return
+    for _ in range(n):
+        a, v = random.uniform(0, 6.28), random.uniform(2, 6)
+        pid = c.create_oval(x - 3, y - 3, x + 3, y + 3, fill=col, outline="")
+        particles.append({"id": pid, "x": x, "y": y, "dx": math.cos(a) * v, "dy": math.sin(a) * v, "life": 12})
+
+def spawn_enemy():
+    if len(enemies) >= 32:
+        for e in enemies: e["dx"] *= 1.04; e["dy"] *= 1.04
+        return
+    while True:
+        ex, ey = random.randint(40, W - 70), random.randint(90, H - 70)
+        if math.hypot(ex - px, ey - py) > 165: break
+    etype = random.choices(["BALL", "SEEKER", "SPEED"], weights=[60, 25, 15]).pop()
+    m = MODES[mode_idx]
+    sp = (4.8 if m == "HARDCORE" else 3.5) * (1.55 if etype == "SPEED" else (0.75 if etype == "SEEKER" else 1.0))
+    sz = 18 if etype == "SPEED" else 28
+    ang = random.uniform(0, 6.28)
+    if etype == "BALL":
+        o1 = c.create_oval(ex, ey, ex + sz, ey + sz, fill="#2A0815", outline="#FF1744", width=2)
+    elif etype == "SEEKER":
+        o1 = c.create_polygon(ex + sz/2, ey, ex + sz, ey + sz/2, ex + sz/2, ey + sz, ex, ey + sz/2, fill="#331A00", outline="#FF9100", width=2)
+    else:
+        o1 = c.create_rectangle(ex, ey, ex + sz, ey + sz, fill="#240038", outline="#D500F9", width=2)
+    enemies.append({"o1": o1, "type": etype, "sz": sz, "x": ex, "y": ey, "dx": math.cos(ang) * sp, "dy": math.sin(ang) * sp})
+def glass_btn(x, y, w, h, txt, accent, cmd):
+    mp = get_map()
+    r = c.create_rectangle(x - w//2, y - h//2, x + w//2, y + h//2, fill=mp["panel"], outline=accent, width=2)
+    t = c.create_text(x, y, text=txt, fill="#FFFFFF", font=("Segoe UI", 11, "bold"))
+    def over(e): c.itemconfig(r, fill=mp["grid"])
+    def out(e): c.itemconfig(r, fill=mp["panel"])
+    def clk(e): sfx(700, 20); cmd()
+    for item in (r, t):
+        c.tag_bind(item, "<Enter>", over); c.tag_bind(item, "<Leave>", out); c.tag_bind(item, "<Button-1>", clk)
+
+def open_menu():
+    global state; state = "MENU"; reset_canvas(); mp = get_map()
+    inc = sum(get_pet(n)["rate"] for n in saved_pets)
+    c.create_text(W // 2, 68, text="AETHER DRIFT", fill=mp["border"], font=("Segoe UI", 38, "bold"))
+    c.create_rectangle(W // 2 - 260, 108, W // 2 + 260, 144, fill=mp["panel"], outline=mp["border"])
+    c.create_text(W // 2, 126, text=f"BEST: {hs}   •   BALANCE: {money}$   •   +{inc}$/s", fill="#FFD600", font=("Segoe UI", 12, "bold"))
+    s = get_skin()
+    c.create_oval(W // 2 - 52, 165, W // 2 + 52, 269, outline=mp["border"], width=2)
+    c.create_rectangle(W // 2 - 20, 197, W // 2 + 20, 237, fill=s["c2"], outline=s["c1"], width=3)
+    c.create_oval(W // 2 - 11, 211, W // 2 - 5, 217, fill=s["eye"], outline="")
+    c.create_oval(W // 2 + 5, 211, W // 2 + 11, 217, fill=s["eye"], outline="")
+    def ch_mode(): global mode_idx; mode_idx = (mode_idx + 1) % len(MODES); open_menu()
+    def ch_map(): global map_idx; map_idx = (map_idx + 1) % len(MAPS); open_menu()
+    glass_btn(W // 2 - 145, 310, 270, 42, f"MODE: {MODES[mode_idx]}", "#FF9100", ch_mode)
+    glass_btn(W // 2 + 145, 310, 270, 42, f"MAP: {mp['name']}", mp["border"], ch_map)
+    glass_btn(W // 2, 365, 320, 46, "PLAY ARENA", "#00FF88", start_game)
+    glass_btn(W // 2 - 145, 425, 270, 42, f"PETS BASE ({len(saved_pets)}/12)", "#00FF88", open_pets)
+    glass_btn(W // 2 + 145, 425, 270, 42, "SKINS SHOP", "#D500F9", open_skins)
+    glass_btn(W // 2 - 145, 480, 270, 42, "SETTINGS", "#0077FF", open_settings)
+    glass_btn(W // 2 + 145, 480, 270, 42, "EXIT", "#FF1744", root.destroy)
+
+def open_pets():
+    global state; state = "PETS"; reset_canvas(); mp = get_map()
+    inc = sum(get_pet(n)["rate"] for n in saved_pets)
+    c.create_text(W // 2, 52, text="BRAINROT SANCTUARY", fill="#00FF88", font=("Segoe UI", 26, "bold"))
+    c.create_text(W // 2, 88, text=f"SLOTS: {len(saved_pets)}/12   •   BALANCE: {money}$   •   +{inc}$/s", fill="#FFD600", font=("Segoe UI", 12, "bold"))
+    if not saved_pets:
+        c.create_text(W // 2, 260, text="Base is empty! Catch glowing pets in the arena.", fill="#64748B", font=("Segoe UI", 14))
+    else:
+        for i, pn in enumerate(saved_pets):
+            inf = get_pet(pn)
+            bx, by = 185 + (i % 3) * 245, 155 + (i // 3) * 92
+            c.create_rectangle(bx - 108, by - 36, bx + 108, by + 36, fill=mp["panel"], outline=inf["col"], width=2)
+            c.create_oval(bx - 96, by - 14, bx - 68, by + 14, fill=inf["col"], outline="white", width=2)
+            c.create_text(bx + 18, by - 18, text=f"{pn} (+{inf['rate']}$/s)", fill=inf["col"], font=("Segoe UI", 10, "bold"))
+            def make_sell(idx, val):
+                def do_sell():
+                    global money, exp_money
+                    saved_pets.pop(idx); money += val; exp_money = money
+                    save_data(); sfx(1200, 40); open_pets()
+                return do_sell
+            glass_btn(bx + 18, by + 12, 130, 26, f"SELL (+{inf['sell']}$)", "#FFD600", make_sell(i, inf["sell"]))
+    def next_f(): global filter_idx; filter_idx = (filter_idx + 1) % len(FILTERS); open_pets()
+    glass_btn(W // 2 - 145, 575, 250, 42, f"AUTO-DEL: {FILTERS[filter_idx]}", "#FF1744" if filter_idx else "#64748B", next_f)
+    glass_btn(W // 2 + 145, 575, 210, 42, "BACK TO MENU", "#00F0FF", open_menu)
+
+def open_skins():
+    global state, skin_idx, money, exp_money
+    state = "SKINS"; reset_canvas(); s = get_skin(); mp = get_map()
+    c.create_text(W // 2, 60, text="CYBER WARDROBE", fill="#D500F9", font=("Segoe UI", 28, "bold"))
+    c.create_text(W // 2, 100, text=f"BALANCE: {money}$", fill="#FFD600", font=("Segoe UI", 15, "bold"))
+    c.create_rectangle(W // 2 - 140, 135, W // 2 + 140, 330, fill=mp["panel"], outline=s["c1"], width=2)
+    c.create_rectangle(W // 2 - 36, 165, W // 2 + 36, 237, fill=s["c2"], outline=s["c1"], width=4)
+    c.create_oval(W // 2 - 20, 192, W // 2 - 9, 203, fill=s["eye"], outline="")
+    c.create_oval(W // 2 + 9, 192, W // 2 + 20, 203, fill=s["eye"], outline="")
+    c.create_text(W // 2, 268, text=s["name"], fill=s["c1"], font=("Segoe UI", 20, "bold"))
+    st_txt = "UNLOCKED" if s["name"] in owned_skins else f"PRICE: {s['cost']}$"
+    c.create_text(W // 2, 302, text=st_txt, fill="#00FF88" if s["name"] in owned_skins else "#FFD600", font=("Segoe UI", 14, "bold"))
+    def prev_s(): global skin_idx; skin_idx = (skin_idx - 1) % len(SKINS); open_skins()
+    def next_s(): global skin_idx; skin_idx = (skin_idx + 1) % len(SKINS); open_skins()
+    glass_btn(W // 2 - 190, 232, 54, 54, "<", "#00F0FF", prev_s)
+    glass_btn(W // 2 + 190, 232, 54, 54, ">", "#00F0FF", next_s)
+    if s["name"] in owned_skins:
+        glass_btn(W // 2, 390, 240, 46, "EQUIP SKIN", "#00FF88", open_menu)
+    else:
+        def buy():
+            global money, exp_money
+            if money >= s["cost"]:
+                money -= s["cost"]; exp_money = money
+                owned_skins.add(s["name"]); save_data(); sfx(1046, 60); open_skins()
+        glass_btn(W // 2, 390, 240, 46, f"BUY ({s['cost']}$)", "#FFD600" if money >= s["cost"] else "#475569", buy)
+    glass_btn(W // 2, 460, 240, 44, "BACK TO MENU", "#00F0FF", open_menu)
+def open_settings():
+    global state; state = "SETTINGS"; reset_canvas()
+    c.create_text(W // 2, 95, text="SYSTEM SETTINGS", fill="#0077FF", font=("Segoe UI", 28, "bold"))
+    def ts(): global sfx_on; sfx_on = not sfx_on; open_settings()
+    def tp(): global pet_often; pet_often = not pet_often; open_settings()
+    glass_btn(W // 2, 210, 340, 48, f"SOUND FX: {'ON' if sfx_on else 'OFF'}", "#00F0FF" if sfx_on else "#475569", ts)
+    glass_btn(W // 2, 285, 340, 48, f"PET RATE: {'OFTEN (TEST)' if pet_often else 'RARE (NORMAL)'}", "#D500F9" if pet_often else "#FFD600", tp)
+    glass_btn(W // 2, 410, 240, 46, "BACK TO MENU", "#00F0FF", open_menu)
+
+def open_gameover():
+    global state; state = "OVER"; save_data(); reset_canvas(); mp = get_map()
+    c.create_rectangle(170, 120, W - 170, H - 120, fill=mp["panel"], outline="#FF1744", width=3)
+    c.create_text(W // 2, 180, text="SYSTEM CRASHED", fill="#FF1744", font=("Segoe UI", 32, "bold"))
+    c.create_text(W // 2, 245, text=f"SCORE: {sc}   •   BEST: {hs}", fill="#00F0FF", font=("Segoe UI", 16, "bold"))
+    c.create_text(W // 2, 285, text=f"TOTAL BALANCE: {money}$", fill="#FFD600", font=("Segoe UI", 16, "bold"))
+    glass_btn(W // 2, 370, 240, 46, "RETRY", "#00F0FF", start_game)
+    glass_btn(W // 2, 435, 240, 46, "MAIN MENU", "#D500F9", open_menu)
+
+def add_active_pet(pn):
+    inf = get_pet(pn)
+    o = c.create_oval(px, py, px + 14, py + 14, fill=inf["col"], outline="white", width=1)
+    t = c.create_text(px, py - 10, text=pn, fill=inf["col"], font=("Segoe UI", 8, "bold"))
+    active_pets.append({"x": float(px), "y": float(py), "rate": inf["rate"], "o": o, "t": t})
+
+def start_game():
+    global state, px, py, vx, vy, ps, base_spd, sc, exp_sc, dash_cd, dash_t, shield_t, slow_t, combo, combo_t, wave_r, buff, wild_pet, pet_t, skin_idx
+    if get_skin()["name"] not in owned_skins: skin_idx = 0
+    state = "GAME"; px, py, vx, vy, ps, base_spd, sc, exp_sc = float(W // 2), float(H // 2), 0.0, 0.0, 34, 6.5, 0, 0
+    dash_cd, dash_t, shield_t, slow_t, combo, combo_t, wave_r, buff, wild_pet, pet_t = 0, 0, 0, 0, 1, 0, 0, None, None, 0
+    reset_canvas(); s = get_skin(); mp = get_map(); keys.clear()
+    c.create_rectangle(14, 14, W - 14, 68, fill=mp["panel"], outline=mp["border"], width=2)
+    objs["wave"] = c.create_oval(0, 0, 0, 0, outline=mp["border"], width=3, state="hidden")
+    objs["sh"] = c.create_oval(0, 0, 0, 0, outline="#00F0FF", width=2, state="hidden")
+    objs["pb"] = c.create_rectangle(0, 0, 0, 0, fill=s["c2"], outline=s["c1"], width=3)
+    objs["el"] = c.create_oval(0, 0, 0, 0, fill=s["eye"], outline="")
+    objs["er"] = c.create_oval(0, 0, 0, 0, fill=s["eye"], outline="")
+    objs["co"] = c.create_oval(0, 0, 0, 0, fill="#FF9100", outline="#FFD600", width=2)
+    objs["ci"] = c.create_oval(0, 0, 0, 0, fill="#FFD600", outline="")
+    objs["t1"] = c.create_text(32, 41, anchor="w", fill="#00F0FF", font=("Segoe UI", 14, "bold"))
+    objs["t2"] = c.create_text(180, 41, anchor="w", fill="#FFD600", font=("Segoe UI", 14, "bold"))
+    objs["t3"] = c.create_text(365, 41, anchor="w", fill="#00FF88", font=("Segoe UI", 13, "bold"))
+    objs["t4"] = c.create_text(W - 32, 41, anchor="e", fill="#FF1744", font=("Segoe UI", 14, "bold"))
+    c.create_text(W // 2, H - 26, text="WASD: Drift  •  [SPACE]: Dash  •  [P]: Pets Base  •  [ESC]: Menu", fill="#64748B", font=("Segoe UI", 10, "bold"))
+    for pn in saved_pets: add_active_pet(pn)
+    for _ in range(3 if MODES[mode_idx] == "CHAOS" else 1): spawn_enemy()
+
+def on_key(e):
+    global dash_cd, dash_t
+    keys.add(e.keycode)
+    if state == "GAME" and not get_ban():
+        if e.keycode == 27: save_data(); open_menu()
+        if e.keycode == 80: save_data(); open_pets()
+        if e.keycode == 32 and dash_cd <= 0:
+            dash_cd, dash_t = 80, 6; sfx(650, 30)
+            add_sparks(px + ps / 2, py + ps / 2, get_skin()["c1"], 8)
+
+root.bind("<KeyPress>", on_key)
+root.bind("<KeyRelease>", lambda e: keys.discard(e.keycode))
+def loop():
+    global state, px, py, vx, vy, ps, base_spd, sc, exp_sc, hs, money, exp_money, cx, cy, pulse
+    global dash_cd, dash_t, ldx, ldy, shield_t, slow_t, combo, combo_t, wave_r, buff, wild_pet, pet_t
+    banned, rem, reason = get_ban()
+    if banned:
+        if state != "BANNED":
+            state = "BANNED"; reset_canvas(); c.configure(bg="#14050A")
+            c.create_rectangle(100, 120, W - 100, H - 120, fill="#1F0810", outline="#FF1744", width=3)
+            c.create_text(W // 2, 200, text="ACCOUNT SUSPENDED", fill="#FF1744", font=("Segoe UI", 32, "bold"))
+            c.create_text(W // 2, 260, text=f"Auto-AC: {reason}", fill="#FFD600", font=("Segoe UI", 14, "bold"))
+            objs["bt"] = c.create_text(W // 2, 330, fill="#00F0FF", font=("Segoe UI", 24, "bold"))
+        c.itemconfig(objs["bt"], text=f"Unban in {rem}s")
+        keys.clear(); return root.after(200, loop)
+    elif state == "BANNED": open_menu()
+    if state == "GAME":
+        # Авто-проверка целостности данных (античит без кнопок)
+        if base_spd != 6.5 or ps < 14 or ps > 36: set_ban("Player Attributes Altered"); return root.after(16, loop)
+        if sc != exp_sc or money != exp_money or money < 0: set_ban("Memory / Save Tampering"); return root.after(16, loop)
+        if dash_cd > 0: dash_cd -= 1
+        if shield_t > 0: shield_t -= 1
+        if slow_t > 0: slow_t -= 1
+        if combo_t > 0: combo_t -= 1
+        else: combo = 1
+        ix = (-1 if (65 in keys or 37 in keys) else 0) + (1 if (68 in keys or 39 in keys) else 0)
+        iy = (-1 if (87 in keys or 38 in keys) else 0) + (1 if (83 in keys or 40 in keys) else 0)
+        if ix or iy:
+            ln = math.hypot(ix, iy); ldx, ldy = ix / ln, iy / ln
+        if dash_t > 0:
+            dash_t -= 1; vx, vy = ldx * 21.0, ldy * 21.0
+        else:
+            tx_v = (ix / math.hypot(ix, iy) * base_spd) if (ix or iy) else 0.0
+            ty_v = (iy / math.hypot(ix, iy) * base_spd) if (ix or iy) else 0.0
+            vx += (tx_v - vx) * 0.28; vy += (ty_v - vy) * 0.28
+        px = max(18.0, min(float(W - ps - 18), px + vx))
+        py = max(72.0, min(float(H - ps - 18), py + vy))
+        if wave_r > 0:
+            wave_r += 18
+            c.itemconfig(objs["wave"], state="normal")
+            c.coords(objs["wave"], px + ps/2 - wave_r, py + ps/2 - wave_r, px + ps/2 + wave_r, py + ps/2 + wave_r)
+            for e in enemies:
+                d = math.hypot(e["x"] - px, e["y"] - py)
+                if 0 < d < wave_r + 30:
+                    e["dx"] = ((e["x"] - px) / d) * 5.0; e["dy"] = ((e["y"] - py) / d) * 5.0
+            if wave_r > 240: wave_r = 0; c.itemconfig(objs["wave"], state="hidden")
+        for pt in list(particles):
+            pt["x"] += pt["dx"]; pt["y"] += pt["dy"]; pt["life"] -= 1
+            if pt["life"] <= 0: c.delete(pt["id"]); particles.remove(pt)
+            else: c.coords(pt["id"], pt["x"] - 2, pt["y"] - 2, pt["x"] + 2, pt["y"] + 2)
+        for pp in list(popups):
+            pp["y"] -= 1.2; pp["life"] -= 1
+            if pp["life"] <= 0: c.delete(pp["id"]); popups.remove(pp)
+            else: c.coords(pp["id"], pp["x"], pp["y"])
+        chance = 180 if pet_often else 1800
+        if wild_pet is None and random.randint(1, chance) == 1:
+            wx, wy = random.randint(70, W - 90), random.randint(110, H - 90)
+            pd = random.choices(PETS_DB, weights=[p["w"] for p in PETS_DB]).pop()
+            o1 = c.create_oval(wx, wy, wx + 24, wy + 24, fill="#111726", outline=pd["col"], width=3)
+            o2 = c.create_text(wx + 12, wy - 12, text=f"{pd['name']} (+{pd['rate']}$/s)", fill=pd["col"], font=("Segoe UI", 9, "bold"))
+            wild_pet = {"x": wx, "y": wy, "data": pd, "o1": o1, "o2": o2, "life": 480}
+        if wild_pet:
+            wild_pet["life"] -= 1
+            if px < wild_pet["x"] + 24 and px + ps > wild_pet["x"] and py < wild_pet["y"] + 24 and py + ps > wild_pet["y"]:
+                pd = wild_pet["data"]
+                c.delete(wild_pet["o1"]); c.delete(wild_pet["o2"]); wild_pet = None
+                if is_filtered(pd["name"]) or len(saved_pets) >= 12:
+                    sfx(1300, 35); money += pd["sell"]; exp_money = money; save_data()
+                    add_sparks(px + ps/2, py + ps/2, "#FFD600", 10)
+                    add_popup(px + ps/2, py - 15, f"AUTO-SOLD {pd['name']} (+{pd['sell']}$)", "#FFD600")
+                else:
+                    sfx(1046, 50); add_sparks(px + ps/2, py + ps/2, pd["col"], 14)
+                    add_popup(px + ps/2, py - 15, f"CAUGHT {pd['name']}!", pd["col"])
+                    saved_pets.append(pd["name"]); save_data(); add_active_pet(pd["name"])
+            elif wild_pet["life"] <= 0:
+                c.delete(wild_pet["o1"]); c.delete(wild_pet["o2"]); wild_pet = None
+        inc = sum(p["rate"] for p in active_pets)
+        pet_t += 1
+        if pet_t >= 60 and inc > 0:
+            pet_t = 0; money += inc; exp_money += inc; save_data()
+            add_popup(px + ps/2, py - 10, f"+{inc}$", "#00FF88")
+        for i, p in enumerate(active_pets):
+            a = pulse + i * 1.1
+            tx, ty = px + ps/2 + math.cos(a) * (ps + 18) - 7, py + ps/2 + math.sin(a) * (ps + 18) - 7
+            p["x"] += (tx - p["x"]) * 0.16; p["y"] += (ty - p["y"]) * 0.16
+            c.coords(p["o"], p["x"], p["y"], p["x"] + 14, p["y"] + 14); c.coords(p["t"], p["x"] + 7, p["y"] - 9)
+        if buff is None and random.randint(1, 340) == 1:
+            bx, by = random.randint(60, W - 80), random.randint(100, H - 80)
+            bt = random.choice(["SHIELD", "SLOW"])
+            bc = "#00F0FF" if bt == "SHIELD" else "#D500F9"
+            o1 = c.create_rectangle(bx, by, bx + 22, by + 22, fill="#111726", outline=bc, width=2)
+            o2 = c.create_text(bx + 11, by + 11, text="S" if bt == "SHIELD" else "T", fill=bc, font=("Segoe UI", 10, "bold"))
+            buff = {"x": bx, "y": by, "type": bt, "o1": o1, "o2": o2}
+        if buff and px < buff["x"] + 22 and px + ps > buff["x"] and py < buff["y"] + 22 and py + ps > buff["y"]:
+            sfx(950, 40); add_popup(px + ps/2, py - 15, f"{buff['type']}!", "#00F0FF")
+            if buff["type"] == "SHIELD": shield_t = 300
+            else: slow_t = 300
+            c.delete(buff["o1"]); c.delete(buff["o2"]); buff = None
+        sm = 0.45 if slow_t > 0 else 1.0
+        hit = False
+        for e in enemies:
+            if e["type"] == "SEEKER":
+                ang = math.atan2(py - e["y"], px - e["x"])
+                e["dx"] += math.cos(ang) * 0.08; e["dy"] += math.sin(ang) * 0.08
+                sp_cur = math.hypot(e["dx"], e["dy"])
+                if sp_cur > 3.2: e["dx"] = (e["dx"]/sp_cur)*3.2; e["dy"] = (e["dy"]/sp_cur)*3.2
+            e["x"] += e["dx"] * sm; e["y"] += e["dy"] * sm
+            sz = e["sz"]
+            if e["x"] <= 18 or e["x"] >= W - sz - 18: e["dx"] *= -1
+            if e["y"] <= 72 or e["y"] >= H - sz - 18: e["dy"] *= -1
+            if e["type"] == "SEEKER":
+                c.coords(e["o1"], e["x"]+sz/2, e["y"], e["x"]+sz, e["y"]+sz/2, e["x"]+sz/2, e["y"]+sz, e["x"], e["y"]+sz/2)
+            else:
+                c.coords(e["o1"], e["x"], e["y"], e["x"] + sz, e["y"] + sz)
+            if px < e["x"] + sz and px + ps > e["x"] and py < e["y"] + sz and py + ps > e["y"]: hit = True
+        if px < cx + cs and px + ps > cx and py < cy + cs and py + ps > cy:
+            sfx(1100, 30); add_sparks(cx + cs/2, cy + cs/2, "#FFD600", 8)
+            gain = 2 * combo; sc += 1; exp_sc += 1; money += gain; exp_money += gain
+            add_popup(cx, cy - 10, f"+{gain}$ (x{combo})", "#FFD600")
+            combo = min(5, combo + 1); combo_t = 150
+            if sc > hs: hs = sc
+            save_data()
+            cx, cy = random.randint(50, W - 70), random.randint(90, H - 70)
+            step = 4 if MODES[mode_idx] == "CHAOS" else 5
+            if sc % step == 0:
+                sfx(880, 50); wave_r = 25; add_popup(px + ps/2, py - 25, "SHOCKWAVE!", "#00F0FF")
+                if ps > 15: ps = max(15, ps - 3)
+                for _ in range(min(len(enemies), 8)): spawn_enemy()
+        if hit and shield_t <= 0 and dash_t <= 0:
+            sfx(160, 140); add_sparks(px + ps/2, py + ps/2, "#FF1744", 16); return open_gameover()
+        c.itemconfig(objs["sh"], state="normal" if shield_t > 0 else "hidden")
+        c.coords(objs["sh"], px - 8, py - 8, px + ps + 8, py + ps + 8)
+        c.coords(objs["pb"], px, py, px + ps, py + ps)
+        er, lx, ly = max(2, ps * 0.08), ix * (ps * 0.08), iy * (ps * 0.08)
+        ey, elx, erx = py + ps * 0.42 + ly, px + ps * 0.33 + lx, px + ps * 0.67 + lx
+        c.coords(objs["el"], elx - er, ey - er, elx + er, ey + er); c.coords(objs["er"], erx - er, ey - er, erx + er, ey + er)
+        pulse += 0.14; p = math.sin(pulse) * 2
+        c.coords(objs["co"], cx - p, cy - p, cx + cs + p, cy + cs + p)
+        c.coords(objs["ci"], cx + 4 - p/2, cy + 4 - p/2, cx + cs - 4 + p/2, cy + cs - 4 + p/2)
+        c.itemconfig(objs["t1"], text=f"SCORE: {sc}"); c.itemconfig(objs["t2"], text=f"MONEY: {money}$")
+        c.itemconfig(objs["t3"], text=f"COMBO x{combo}  •  +{inc}$/s"); c.itemconfig(objs["t4"], text=f"THREATS: {len(enemies)}")
+    root.after(16, loop)
+
+open_menu()
+loop()
+root.mainloop()
